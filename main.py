@@ -1,19 +1,26 @@
 from fastapi import Depends, FastAPI, HTTPException,status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from security import hash_password
-from security import verify_password
+from security import hash_password,create_token,get_current_artist
+from security import verify_password,get_current_user,get_current_organizer
 from database import Base, engine, get_db
-from models import User,ArtistsProfile,OrganizerProfile,Event,PortfolioItem,Application,EventStatus
+from models import User,ArtistsProfile,OrganizerProfile,Event,PortfolioItem,Application,EventStatus,UserRole
 from schemas import (
     UserCreate,
     UserResponse,
+    UserUpdate,
+
     artist_profilesCreate,
     artist_profilesUpdate,
     artist_profilesResponse,
+    artist_publicResponse,
+
     organizer_profilesCreate,
-    UserUpdate,
     organizer_profilesResponse,
-    LoginRequest,
+    organizer_publicResponse,
+    
+    LoginRequest,Token,
+
     portfolio_itemsCreate,
     portfolio_itemsUpdate,
     portfolio_itemsResponse,
@@ -64,97 +71,122 @@ def post_user(user_data: UserCreate, db: Session = Depends(get_db)):
     user = User(
         email=user_data.email,
         password=hash_password(user_data.password),
-        role=user_data.role.value,
+        role=user_data.role,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
 
-@app.post("/auth/login")
-def login(data: LoginRequest,db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
+@app.post("/auth/login",response_model=Token)
+def login(form_data:OAuth2PasswordRequestForm=Depends(),db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == form_data.username).first()
 
     if not user:
-        raise HTTPException(status_code=401,detail="Invalid email or password")
-
-    stored_password = user.password
-    is_valid = verify_password(data.password, stored_password)
-
-    # Backward compatibility for old rows saved as plain text: allow once, then upgrade to hash.
-    if (not is_valid) and (data.password == stored_password):
-        user.password = hash_password(data.password)
-        db.commit()
-        is_valid = True
-
-    if not is_valid:
-        raise HTTPException(status_code=401,detail="Invalid email or password")
-    return {
-        "message": "Login successful",
-        "user_id": user.id,
-        "role": user.role
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="incorrect email or password",
+            headers={"Www-Authenticate":"Bearer"}
+        )
+    if not verify_password(
+        form_data.password,
+        user.password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={
+                "WWW-Authenticate": "Bearer"
+            }
+        )
+    access_token=create_token(user)
+    return{
+        "access_token":access_token,
+        "token_type":"bearer"
     }
 
+    
 @app.patch("/user/{user_id}",response_model=UserResponse)
-def upd_user(user_id:int, update_data:UserUpdate,db:Session=Depends(get_db)):
-    user=db.query(User).filter(User.id==user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    data= update_data.model_dump(exclude_unset=True)
+def upd_user(user_id:int, update_data:UserUpdate,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only update your own account"
+        )
+
+    data = update_data.model_dump(
+        exclude_unset=True
+    )
 
     if "email" in data and data["email"] is not None:
-        user.email=data["email"]
-    if "password" in data and data["password"] is not None:
-        user.password = hash_password(data["password"])
+        current_user.email = data["email"]
 
+    if "password" in data and data["password"] is not None:
+        current_user.password = hash_password(
+            data["password"]
+        )
     db.commit()
-    db.refresh(user)
-    return user
+    db.refresh(current_user)
+    return current_user
 
 @app.delete("/user/{user_id}",status_code=status.HTTP_204_NO_CONTENT)
-def del_user(user_id:int,db:Session =Depends(get_db)):
-    user = db.query(User).filter(User.id==user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    db.delete(user)
+def del_user(user_id:int,current_user:User=Depends(get_current_user),db:Session =Depends(get_db)):
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only delete your own account"
+        )
+    db.delete(current_user)
     db.commit()
 
-@app.post("/artist/profile/{user_id}", response_model=artist_profilesResponse, status_code=status.HTTP_201_CREATED)
-def create_artist_profile(user_id:int, profile_data: artist_profilesCreate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.role.value != "artist":
-        raise HTTPException(status_code=400, detail="User role must be artist")
-    if user.artist_profile is not None:
-        raise HTTPException(status_code=400, detail="Artist profile already exists")
+@app.post(
+    "/artist/profile",
+    response_model=artist_profilesResponse,
+    status_code=status.HTTP_201_CREATED
+)
+def create_artist_profile(
+    profile_data: artist_profilesCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != UserRole.ARTIST:
+        raise HTTPException(
+            status_code=403,
+            detail="User role must be artist"
+        )
+
+    if current_user.artist_profile is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Artist profile already exists"
+        )
 
     artist = ArtistsProfile(
-        user_id=user_id,
+        user_id=current_user.id,
         full_name=profile_data.full_name,
         bio=profile_data.bio,
         talent_skill=profile_data.talent_skill,
         location=profile_data.location,
-        phone_number=profile_data.phone_number,
+        phone_number=profile_data.phone_number
     )
+
     db.add(artist)
     db.commit()
     db.refresh(artist)
+
     return artist
 
 
-@app.post("/organizer/profile/{user_id}", response_model=organizer_profilesResponse, status_code=status.HTTP_201_CREATED)
-def create_organizer_profile(user_id:int, profile_data: organizer_profilesCreate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if user.role.value != "organizer":
-        raise HTTPException(status_code=400, detail="User role must be organizer")
-    if user.organizer_profile is not None:
+@app.post("/organizer/profile/", response_model=organizer_profilesResponse, status_code=status.HTTP_201_CREATED)
+def create_organizer_profile( profile_data: organizer_profilesCreate,current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+
+    if current_user.role != UserRole.ORGANIZER:
+        raise HTTPException(status_code=403, detail="User role must be organizer")
+    if current_user.organizer_profile is not None:
         raise HTTPException(status_code=400, detail="Organizer profile already exists")
 
     organizer = OrganizerProfile(
-        user_id=user_id,
+        user_id=current_user.id,
         company_name=profile_data.company_name,
         description=profile_data.description,
         website_url=profile_data.website_url,
@@ -166,83 +198,73 @@ def create_organizer_profile(user_id:int, profile_data: organizer_profilesCreate
     return organizer
 
 
-@app.get("/artist/", response_model=list[artist_profilesResponse])
+@app.get("/artist/", response_model=list[artist_publicResponse])
 def artists(db:Session = Depends(get_db)):
     return db.query(ArtistsProfile).all()
 
-@app.get("/artist/{artist_id}",response_model=artist_profilesResponse)
-def artist(artist_id:int,db:Session=Depends(get_db)):
-    artist=db.query(ArtistsProfile).filter(ArtistsProfile.id==artist_id).first()
-    if not artist:
-        raise HTTPException(status_code=404, detail= "User not found")
-    return artist
-
-@app.patch("/artist/{artist_id}", response_model=artist_profilesResponse)
-def update_artist_profile(
-    artist_id: int,
-    update_data: artist_profilesUpdate,
-    db: Session = Depends(get_db),
+@app.get("/artist/profile", response_model=artist_profilesResponse)
+def artist(
+    current_artist: ArtistsProfile = Depends(get_current_artist)
 ):
-    artist = db.query(ArtistsProfile).filter(ArtistsProfile.id == artist_id).first()
-    if not artist:
-        raise HTTPException(status_code=404, detail="Artist profile not found")
+    return current_artist
+        
 
-    data = update_data.model_dump(exclude_unset=True)
-    for field, value in data.items():
-        setattr(artist, field, value)
-
+@app.patch("/artist/profile",response_model=artist_profilesResponse)
+def update_artist_profile(
+    data: artist_profilesUpdate,
+    current_artist: ArtistsProfile = Depends(get_current_artist),
+    db: Session = Depends(get_db)
+):
+    update_data = data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(current_artist, field, value)
+    
     db.commit()
-    db.refresh(artist)
-    return artist
+    db.refresh(current_artist)
 
-@app.delete("/artist/{artist_id}",status_code=status.HTTP_204_NO_CONTENT)
-def del_artist(artist_id:int, db:Session=Depends(get_db)):
-    artist=db.query(ArtistsProfile).filter(ArtistsProfile.id==artist_id).first()
-    if not artist:
-        raise HTTPException(status_code=404,detail="artist not found")
-    db.delete(artist)
+    return current_artist
+
+@app.delete("/artist/profile",status_code=status.HTTP_204_NO_CONTENT)
+def del_artist(current_artist:ArtistsProfile=Depends(get_current_artist), db:Session=Depends(get_db)):
+
+    db.delete(current_artist)
     db.commit()
 
-@app.get("/organizer/", response_model=list[organizer_profilesResponse])
+@app.get("/organizer/", response_model=list[organizer_publicResponse])
 def organizers(db:Session=Depends(get_db)):
     return db.query(OrganizerProfile).all()
 
-@app.get("/organizer/{organizer_id}",response_model=organizer_profilesResponse)
-def organizer(organizer_id:int,db:Session=Depends(get_db)):
-    organizer=db.query(OrganizerProfile).filter(OrganizerProfile.id==organizer_id).first()
-    if not organizer:
-        raise HTTPException(status_code=404, detail="organizer not found")
-    return organizer
+@app.get("/organizer/profile", response_model=organizer_profilesResponse)
+def organizer(
+    current_organizer: OrganizerProfile = Depends(get_current_organizer)
+):
+    return current_organizer
 
-@app.patch("/organizer/{organizer_id}",response_model=organizer_profilesResponse)
-def upd_organizer(organizer_id:int,update_data:organizer_profilesCreate,db:Session=Depends(get_db)):
-    organizer=db.query(OrganizerProfile).filter(OrganizerProfile.id==organizer_id).first()
-    if not organizer:
-        raise HTTPException(status_code=404, detail="organizer not found")
+@app.patch("/organizer/profile",response_model=organizer_profilesResponse)
+def upd_organizer(update_data:organizer_profilesCreate,current_organizer:OrganizerProfile=Depends(get_current_organizer),db:Session=Depends(get_db)):
+
     data=update_data.model_dump(exclude_unset=True)
     for field, value in data.items():
-        setattr(organizer, field, value)
+        setattr(current_organizer, field, value)
     db.commit()
-    db.refresh(organizer)
-    return organizer
+    db.refresh(current_organizer)
+    return current_organizer
 
-@app.delete("/organizer/{organizer_id}",status_code=status.HTTP_204_NO_CONTENT)
-def del_organizer(organizer_id:int, db:Session=Depends(get_db)):
-    organizer=db.query(OrganizerProfile).filter(OrganizerProfile.id==organizer_id).first()
-    if not organizer:
-        raise HTTPException(status_code=404, detail="Organizer not found")
-    db.delete(organizer)
+@app.delete("/organizer/",status_code=status.HTTP_204_NO_CONTENT)
+def del_organizer(current_organizer:OrganizerProfile=Depends(get_current_organizer), db:Session=Depends(get_db)):
+
+    db.delete(current_organizer)
     db.commit()
 
-@app.post("/artist/{artist_id}/portfolio",response_model=portfolio_itemsResponse,status_code=status.HTTP_201_CREATED)
-def create_portfolio_item(artist_id: int,data: portfolio_itemsCreate,db: Session = Depends(get_db)):
-    artist = db.query(ArtistsProfile).filter(ArtistsProfile.id == artist_id).first()
+@app.post("/artist/portfolio",response_model=portfolio_itemsResponse,status_code=status.HTTP_201_CREATED)
+def create_portfolio_item(data: portfolio_itemsCreate, current_artist: ArtistsProfile = Depends(get_current_artist), db: Session = Depends(get_db)):
+    artist = db.query(ArtistsProfile).filter(ArtistsProfile.id == current_artist.id).first()
 
     if not artist:
         raise HTTPException(status_code=404,detail="Artist not found")
 
     portfolio_item = PortfolioItem(
-        artist_id=artist_id,
+        artist_id=current_artist.id,
         title=data.title,
         description=data.description,
         media_url=data.media_url,
@@ -255,14 +277,27 @@ def create_portfolio_item(artist_id: int,data: portfolio_itemsCreate,db: Session
 
     return portfolio_item
 
-@app.get("/artist/{artist_id}/portfolio",response_model=list[portfolio_itemsResponse])
-def get_artist_portfolio(artist_id: int,db: Session = Depends(get_db)):
-    artist = db.query(ArtistsProfile).filter(ArtistsProfile.id == artist_id).first()
+@app.get("/artist/portfolio",response_model=list[portfolio_itemsResponse])
+def get_artist_portfolio(current_artist:ArtistsProfile=Depends(get_current_artist)):
+    return current_artist.portfolios
 
-    if not artist:
-        raise HTTPException(status_code=404,detail="Artist not found")
+@app.get("/artist/{artist_id}", response_model=artist_publicResponse)
+def public_artist(artist_id: int, db: Session = Depends(get_db)):
+    artist = db.query(ArtistsProfile).filter(
+        ArtistsProfile.id == artist_id
+    ).first()
+    if artist is None:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    return artist
 
-    return (db.query(PortfolioItem).filter(PortfolioItem.artist_id == artist_id).all())
+@app.get("/artist/{artist_id}/portfolio", response_model=list[portfolio_itemsResponse])
+def get_public_artist_portfolio(artist_id: int, db: Session = Depends(get_db)):
+    artist = db.query(ArtistsProfile).filter(
+        ArtistsProfile.id == artist_id
+    ).first()
+    if artist is None:
+        raise HTTPException(status_code=404, detail="Artist not found")
+    return artist.portfolios
 
 @app.get("/portfolio/{portfolio_id}",response_model=portfolio_itemsResponse)
 def get_portfolio_item(portfolio_id: int,db: Session = Depends(get_db)):
@@ -273,11 +308,12 @@ def get_portfolio_item(portfolio_id: int,db: Session = Depends(get_db)):
     return item
 
 @app.patch("/portfolio/{portfolio_id}",response_model=portfolio_itemsResponse)
-def update_portfolio_item(portfolio_id: int,data: portfolio_itemsUpdate,db: Session = Depends(get_db)):
+def update_portfolio_item(portfolio_id: int,data: portfolio_itemsUpdate,current_artist:ArtistsProfile=Depends(get_current_artist),db: Session = Depends(get_db)):
     item = db.query(PortfolioItem).filter(PortfolioItem.id == portfolio_id).first()
-    
     if not item:
         raise HTTPException(status_code=404,detail="Portfolio item not found")
+    if item.artist_id != current_artist.id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this portfolio item")
 
     update_data = data.model_dump(exclude_unset=True)
 
@@ -289,24 +325,37 @@ def update_portfolio_item(portfolio_id: int,data: portfolio_itemsUpdate,db: Sess
 
     return item
 
-@app.delete("/portfolio/{portfolio_id}",status_code=status.HTTP_204_NO_CONTENT)
-def delete_portfolio_item(portfolio_id: int,db: Session = Depends(get_db)):
-    item = db.query(PortfolioItem).filter(PortfolioItem.id == portfolio_id).first()
+@app.delete("/portfolio/{portfolio_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_portfolio_item(
+    portfolio_id: int,
+    current_artist: ArtistsProfile = Depends(get_current_artist),
+    db: Session = Depends(get_db)
+):
+    item = db.query(PortfolioItem).filter(
+        PortfolioItem.id == portfolio_id
+    ).first()
 
     if not item:
-        raise HTTPException(status_code=404,detail="Portfolio item not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Portfolio item not found"
+        )
+
+    if item.artist_id != current_artist.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to delete this portfolio item"
+        )
 
     db.delete(item)
     db.commit()
 
-@app.post("/organizer/{organizer_id}/events",response_model=eventsResponse,status_code=status.HTTP_201_CREATED)
-def create_event(organizer_id: int,data: eventsCreate,db: Session = Depends(get_db)):
-    organizer = db.query(OrganizerProfile).filter(OrganizerProfile.id == organizer_id).first()
-    if not organizer:
-        raise HTTPException(status_code=404,detail="Organizer not found")
+@app.post("/organizer/events",response_model=eventsResponse,status_code=status.HTTP_201_CREATED)
+def create_event(data: eventsCreate,current_organizer:OrganizerProfile=Depends(get_current_organizer),db: Session = Depends(get_db)):
+    organizer = db.query(OrganizerProfile).filter(OrganizerProfile.id == current_organizer.id).first()
 
     event = Event(
-        organizer_id=organizer_id,
+        organizer_id=current_organizer.id,
         title=data.title,
         description=data.description,
         budget=data.budget,
@@ -332,18 +381,35 @@ def get_event(event_id: int,db: Session = Depends(get_db)):
 
     return event
 
-@app.get("/organizer/{organizer_id}/events",response_model=list[eventsResponse])
-def load_events(organizer_id:int,db:Session=Depends(get_db)):
-    organizer=db.query(OrganizerProfile).filter(OrganizerProfile.id==organizer_id).first()
-    if not organizer:
-        raise HTTPException(status_code=404, detail="organizer not found")
+@app.get("/organizer/events",response_model=list[eventsResponse])
+def load_events(current_organizer:OrganizerProfile=Depends(get_current_organizer)):
+    return current_organizer.events
+
+@app.get("/organizer/{organizer_id}", response_model=organizer_publicResponse)
+def public_organizer(organizer_id: int, db: Session = Depends(get_db)):
+    organizer = db.query(OrganizerProfile).filter(
+        OrganizerProfile.id == organizer_id
+    ).first()
+    if organizer is None:
+        raise HTTPException(status_code=404, detail="Organizer not found")
+    return organizer
+
+@app.get("/organizer/{organizer_id}/events", response_model=list[eventsResponse])
+def get_public_organizer_events(organizer_id: int, db: Session = Depends(get_db)):
+    organizer = db.query(OrganizerProfile).filter(
+        OrganizerProfile.id == organizer_id
+    ).first()
+    if organizer is None:
+        raise HTTPException(status_code=404, detail="Organizer not found")
     return organizer.events
 
 @app.patch("/events/{event_id}",response_model=eventsResponse)
-def upd_event(event_id: int, upd_event: eventsUpdate, db: Session = Depends(get_db)):
+def upd_event(event_id: int, upd_event: eventsUpdate, current_organizer:OrganizerProfile=Depends(get_current_organizer),db: Session = Depends(get_db)):
     event=db.query(Event).filter(Event.id==event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="event not found")
+    if current_organizer.id!=event.organizer_id:
+        raise HTTPException(status_code=403,detail="you can update only your events")
     data=upd_event.model_dump(exclude_unset=True)
 
     for key,value in data.items():
@@ -354,34 +420,38 @@ def upd_event(event_id: int, upd_event: eventsUpdate, db: Session = Depends(get_
     return event
 
 @app.delete("/events/{event_id}",status_code=status.HTTP_204_NO_CONTENT)
-def del_event(event_id:int,db:Session=Depends(get_db)):
+def del_event(event_id:int,current_organizer:OrganizerProfile=Depends(get_current_organizer),db:Session=Depends(get_db)):
+
     event=db.query(Event).filter(Event.id==event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="event not found")
+
+    if current_organizer.id!=event.organizer_id:
+        raise HTTPException(status_code=403,detail="you can delete only your events")
     db.delete(event)
     db.commit()
 
 @app.post("/events/{event_id}/applications",response_model=applicationsResponse,status_code=status.HTTP_201_CREATED)
-def create_application(event_id: int,data: applicationsCreate,artist_id: int,db: Session = Depends(get_db)):
+def create_application(event_id: int,data: applicationsCreate,current_artist:ArtistsProfile=Depends(get_current_artist),db: Session = Depends(get_db)):
     event = db.query(Event).filter(Event.id == event_id).first()
     if not event:
         raise HTTPException(status_code=404,detail="Event not found")
 
-    artist = db.query(ArtistsProfile).filter(ArtistsProfile.id == artist_id).first()
+    artist = db.query(ArtistsProfile).filter(ArtistsProfile.id == current_artist.id).first()
     if not artist:
         raise HTTPException(status_code=404,detail="Artist not found")
 
     if event.status != EventStatus.OPEN:
         raise HTTPException(status_code=400,detail="Applications are closed for this event")
 
-    existing_application = db.query(Application).filter(Application.event_id == event_id,Application.artist_id == artist_id).first()
+    existing_application = db.query(Application).filter(Application.event_id == event_id,Application.artist_id == current_artist.id).first()
 
     if existing_application:
         raise HTTPException(status_code=400,detail="Artist has already applied to this event")
 
     application = Application(
         event_id=event_id,
-        artist_id=artist_id,
+        artist_id=current_artist.id,
         pitch_note=data.pitch_note
     )
 
@@ -392,28 +462,79 @@ def create_application(event_id: int,data: applicationsCreate,artist_id: int,db:
     return application
 
 @app.get("/events/{event_id}/applications",response_model=list[applicationsResponse])
-def get_event_applications(event_id: int,db: Session = Depends(get_db)):
+def get_event_applications(
+    event_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     event = db.query(Event).filter(Event.id == event_id).first()
-
     if not event:
-        raise HTTPException(status_code=404,detail="Event not found")
+        raise HTTPException(status_code=404, detail="Event not found")
 
-    return db.query(Application).filter(Application.event_id == event_id).all()
+    if current_user.role == UserRole.ORGANIZER:
+        organizer = current_user.organizer_profile
+        if organizer is None:
+            raise HTTPException(status_code=403, detail="Organizer profile not found")
+        if event.organizer_id != organizer.id:
+            raise HTTPException(status_code=403, detail="You can only view applications for your own events")
+
+        return db.query(Application).filter(
+            Application.event_id == event_id
+        ).all()
+
+    if current_user.role == UserRole.ARTIST:
+        artist = current_user.artist_profile
+        if artist is None:
+            raise HTTPException(status_code=403, detail="Artist profile not found")
+
+        return db.query(Application).filter(
+            Application.event_id == event_id,
+            Application.artist_id == artist.id
+        ).all()
+
+    raise HTTPException(status_code=403, detail="Access denied")
+    
+
 
 @app.get("/applications/{application_id}",response_model=applicationsResponse)
-def get_application(application_id:int,db:Session=Depends(get_db)):
-    application=db.query(Application).filter(Application.id==application_id).first()
+def get_application(
+    application_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    application = db.query(Application).filter(
+        Application.id == application_id
+    ).first()
+
     if not application:
-        raise HTTPException(status_code=404,detail="application not found")
-    return application
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    if current_user.role == UserRole.ARTIST:
+        artist = current_user.artist_profile
+        if artist is None:
+            raise HTTPException(status_code=403, detail="Artist profile not found")
+        if application.artist_id != artist.id:
+            raise HTTPException(status_code=403, detail="You can only view your own applications")
+        return application
+
+    if current_user.role == UserRole.ORGANIZER:
+        organizer = current_user.organizer_profile
+        if organizer is None:
+            raise HTTPException(status_code=403, detail="Organizer profile not found")
+        if application.event.organizer_id != organizer.id:
+            raise HTTPException(status_code=403, detail="You can only view applications for your own events")
+        return application
+
+    raise HTTPException(status_code=403, detail="Access denied")
 
 @app.patch("/applications/{application_id}",response_model=applicationsResponse)
-def update_application(application_id: int,data: applicationsUpdate,db: Session = Depends(get_db)):
+def update_application(application_id: int,data: applicationsUpdate,current_organizer:OrganizerProfile=Depends(get_current_organizer),db: Session = Depends(get_db)):
     application = db.query(Application).filter(Application.id == application_id).first()
 
     if not application:
         raise HTTPException(status_code=404,detail="Application not found")
-
+    if current_organizer.id!=application.event.organizer_id:
+        raise HTTPException(status_code=403,detail="you can only update status of your events")
     application.status = data.status
 
     db.commit()
@@ -422,12 +543,19 @@ def update_application(application_id: int,data: applicationsUpdate,db: Session 
     return application
 
 @app.delete("/applications/{application_id}",status_code=status.HTTP_204_NO_CONTENT)
-def delete_application(application_id: int,db: Session = Depends(get_db)):
+def delete_application(application_id: int,current_artist:ArtistsProfile=Depends(get_current_artist),db: Session = Depends(get_db)):
     application = db.query(Application).filter(Application.id == application_id).first()
 
     if not application:
         raise HTTPException(status_code=404,detail="Application not found")
-
+    if application.artist_id!=current_artist.id:
+        raise HTTPException(status_code=403,detail="you can only delete your application")
     db.delete(application)
     db.commit()
+
+@app.get("/auth/me",response_model=UserResponse)
+def get_me(
+    current_user:User=Depends(get_current_user)
+):
+    return current_user
 

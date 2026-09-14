@@ -60,6 +60,15 @@ class artist_profilesResponse(artist_profilesBase):
 
     id:int
 
+class artist_publicResponse(BaseModel):
+    model_config = ConfigDict(validate_assignment=True, str_strip_whitespace=True,from_attributes=True)
+
+    id: int
+    full_name: str
+    bio: str | None
+    talent_skill: str | None
+    location: str | None
+
 class organizer_profilesBase(BaseModel):
     company_name:str|None
     description:str|None
@@ -73,6 +82,15 @@ class organizer_profilesResponse(organizer_profilesBase):
     model_config = ConfigDict(validate_assignment=True, str_strip_whitespace=True,from_attributes=True)
 
     id:int
+
+class organizer_publicResponse(BaseModel):
+    model_config = ConfigDict(validate_assignment=True, str_strip_whitespace=True,from_attributes=True)
+
+    id: int
+    company_name: str
+    description: str | None
+    website_url: str | None
+    location: str | None
 
 class portfolio_itemsBase(BaseModel):
     title:str = Field(min_length=1)
@@ -142,3 +160,7 @@ class applicationsResponse(applicationsBase):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str

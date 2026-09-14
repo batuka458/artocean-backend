@@ -4,3 +4,7 @@ sqlalchemy
 pydantic
 email-validator
 pwdlib[argon2]
+PyJWT
+pytest
+httpx
+python-multipart
