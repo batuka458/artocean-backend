@@ -104,13 +104,13 @@ class portfolio_itemsResponse(portfolio_itemsBase):
 
 class eventsBase(BaseModel):
     title:str=Field(min_length=1)
-    description:str=Field(min_length=1)
+    description: str = Field(default="", min_length=0)
     budget:float|None=None
     event_date:datetime|None=None
 
 class eventsUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1)
-    description: str | None = Field(default=None, min_length=1)
+    description: str | None = Field(default=None, min_length=0)
     budget: float | None = None
     event_date: datetime | None = None
     status: EventStatus | None = None
