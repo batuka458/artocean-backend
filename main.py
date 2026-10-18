@@ -45,14 +45,14 @@ from schemas import (
 app=FastAPI()
 
 Base.metadata.create_all(bind=engine)
-MEDIA_DIR = Path("uploads")
-MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+# MEDIA_DIR = Path("uploads")
+# MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
-app.mount(
-    "/uploads",
-    StaticFiles(directory=MEDIA_DIR),
-    name="uploads"
-)
+# app.mount(
+#     "/uploads",
+#     StaticFiles(directory=MEDIA_DIR),
+#     name="uploads"
+# )
 
 cloudinary.config(
     cloud_name=os.environ["CLOUDINARY_CLOUD_NAME"],
