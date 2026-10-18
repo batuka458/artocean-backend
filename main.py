@@ -1,5 +1,6 @@
 from fastapi import Depends, FastAPI, HTTPException,status
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.responses import JSONResponse
 from fastapi import UploadFile, File, Form
 from io import BytesIO
 from pathlib import Path
@@ -42,6 +43,18 @@ from schemas import (
 )
 
 app=FastAPI()
+
+@app.exception_handler(Exception)
+async def debug_unhandled_error(request, exc):
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Unhandled server error",
+            "error_type": type(exc).__name__
+        }
+    )
 
 Base.metadata.create_all(bind=engine)
 # MEDIA_DIR = Path("uploads")
