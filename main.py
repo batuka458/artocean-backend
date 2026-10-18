@@ -41,21 +41,30 @@ from schemas import (
     applicationsUpdate,
     applicationsResponse
 )
+from fastapi.exceptions import ResponseValidationError
 
 app=FastAPI()
 
-@app.exception_handler(Exception)
-async def debug_unhandled_error(request, exc):
-    traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+@app.exception_handler(ResponseValidationError)
+async def response_validation_error(request, exc):
+    print("RESPONSE VALIDATION ERRORS:", exc.errors())
+    print("INVALID RESPONSE:", exc.body)
 
     return JSONResponse(
         status_code=500,
         content={
-            "detail": "Unhandled server error",
-            "error_type": type(exc).__name__
+            "detail": "Response validation failed",
+            "errors": [
+                {
+                    "type": error["type"],
+                    "loc": [str(x) for x in error["loc"]],
+                    "msg": error["msg"]
+                }
+                for error in exc.errors()
+            ]
         }
     )
-
 Base.metadata.create_all(bind=engine)
 # MEDIA_DIR = Path("uploads")
 # MEDIA_DIR.mkdir(parents=True, exist_ok=True)
