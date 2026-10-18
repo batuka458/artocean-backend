@@ -32,7 +32,6 @@ from schemas import (
 
     portfolio_itemsResponse,
 
-    eventsCreate,
     eventsUpdate,
     eventsResponse,
 
