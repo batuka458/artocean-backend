@@ -11,6 +11,7 @@ import os
 import traceback
 from datetime import datetime
 from pydantic import EmailStr
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from security import hash_password,create_token,get_current_artist
 from security import verify_password,get_current_user,get_current_organizer
@@ -514,7 +515,6 @@ def create_event(title:str=Form(...),
                  budget:float=Form(...),
                  event_date:datetime=Form(...),
                  event_poster:UploadFile=File(...),current_organizer:OrganizerProfile=Depends(get_current_organizer),db: Session = Depends(get_db)):
-    organizer = db.query(OrganizerProfile).filter(OrganizerProfile.id == current_organizer.id).first()
     allowed_types = {
         "image/jpeg": "image",
         "image/png": "image",
@@ -556,7 +556,11 @@ def create_event(title:str=Form(...),
         )
 
         db.add(event)
-        db.commit()
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            raise
         db.refresh(event)
 
         return event
