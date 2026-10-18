@@ -9,6 +9,8 @@ import cloudinary
 import cloudinary.uploader
 import os
 import traceback
+from datetime import datetime
+from pydantic import EmailStr
 from sqlalchemy.orm import Session
 from security import hash_password,create_token,get_current_artist
 from security import verify_password,get_current_user,get_current_organizer
@@ -17,8 +19,6 @@ from models import User,ArtistsProfile,OrganizerProfile,Event,PortfolioItem,Appl
 from schemas import (
     UserCreate,
     UserResponse,
-    UserUpdate,
-
     artist_profilesCreate,
     artist_profilesUpdate,
     artist_profilesResponse,
@@ -129,24 +129,62 @@ def login(form_data:OAuth2PasswordRequestForm=Depends(),db: Session = Depends(ge
 
     
 @app.patch("/user/{user_id}",response_model=UserResponse)
-def upd_user(user_id:int, update_data:UserUpdate,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+def upd_user(
+    user_id: int,
+    email: EmailStr | None = Form(None),
+    password: str | None = Form(None),
+    media: UploadFile | None = File(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     if current_user.id != user_id:
         raise HTTPException(
             status_code=403,
             detail="You can only update your own account"
         )
 
-    data = update_data.model_dump(
-        exclude_unset=True
-    )
+    if email is not None:
+        current_user.email = email
 
-    if "email" in data and data["email"] is not None:
-        current_user.email = data["email"]
+    if password is not None:
+        current_user.password = hash_password(password)
 
-    if "password" in data and data["password"] is not None:
-        current_user.password = hash_password(
-            data["password"]
-        )
+    if media is not None:
+        allowed_image_types = {
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+        }
+        if media.content_type not in allowed_image_types:
+            raise HTTPException(
+                status_code=400,
+                detail="Profile picture must be a JPEG, PNG, or WebP image"
+            )
+
+        max_size = 10 * 1024 * 1024
+        try:
+            content = media.file.read(max_size + 1)
+            if len(content) > max_size:
+                raise HTTPException(
+                    status_code=413,
+                    detail="File exceeds the 10 MB limit"
+                )
+
+            upload_result = cloudinary.uploader.upload(
+                BytesIO(content),
+                resource_type="image",
+                folder="profile_pictures"
+            )
+            profile_pic_url = upload_result.get("secure_url")
+            if not profile_pic_url:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Profile picture upload failed"
+                )
+            current_user.profile_pic_url = profile_pic_url
+        finally:
+            media.file.close()
+
     db.commit()
     db.refresh(current_user)
     return current_user
@@ -472,22 +510,59 @@ def delete_portfolio_item(
     db.commit()
 
 @app.post("/organizer/events",response_model=eventsResponse,status_code=status.HTTP_201_CREATED)
-def create_event(data: eventsCreate,current_organizer:OrganizerProfile=Depends(get_current_organizer),db: Session = Depends(get_db)):
+def create_event(title:str=Form(...),
+                 description:str=Form(""),
+                 budget:float=Form(...),
+                 event_date:datetime=Form(...),
+                 event_poster:UploadFile=File(...),current_organizer:OrganizerProfile=Depends(get_current_organizer),db: Session = Depends(get_db)):
     organizer = db.query(OrganizerProfile).filter(OrganizerProfile.id == current_organizer.id).first()
+    allowed_types = {
+        "image/jpeg": "image",
+        "image/png": "image",
+        "image/webp": "image",
+    }
 
-    event = Event(
-        organizer_id=current_organizer.id,
-        title=data.title,
-        description=data.description,
-        budget=data.budget,
-        event_date=data.event_date
-    )
+    if (allowed_types.get(event_poster.content_type)) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported media type"
+        )
+    max_size=10*1024*1024
 
-    db.add(event)
-    db.commit()
-    db.refresh(event)
+    try:
+        content=event_poster.file.read(max_size + 1)
+        if len(content)>max_size:
+            raise HTTPException(
+                status_code=413,
+                detail="File exceeds 10MB"
+            )
+        upload_result=cloudinary.uploader.upload(
+            BytesIO(content),
+            resource_type="image",
+            folder="event_poster"
+        )
+        event_poster_url=upload_result.get("secure_url")
+        if not event_poster_url:
+            raise HTTPException(
+                status_code=502,
+                detail="image upload failed"
+            )
+        event = Event(
+            organizer_id=current_organizer.id,
+            title=title,
+            description=description,
+            budget=budget,
+            event_date=event_date,
+            event_poster_url=event_poster_url
+        )
 
-    return event
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+
+        return event
+    finally:
+        event_poster.file.close()
 
 @app.get("/events",response_model=list[eventsResponse])
 def get_events(db: Session = Depends(get_db)):

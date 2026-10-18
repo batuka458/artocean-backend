@@ -77,6 +77,7 @@ class Event(Base):
     description=Column(Text,nullable=False)
     budget=Column(Float,nullable=True)
     event_date=Column(DateTime, nullable=True)
+    event_poster_url=Column(String,nullable=True)
     status=Column(SQLEnum(EventStatus), default=EventStatus.OPEN,nullable=False)
     created_at=Column(DateTime, default=datetime.utcnow)
 

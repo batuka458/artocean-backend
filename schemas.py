@@ -24,17 +24,13 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     pass
 
-class UserUpdate(BaseModel):
-    
-    email: EmailStr|None = None
-    password: str| None = Field(default=None, min_length=1)
-
 class UserResponse(BaseModel):
     model_config = ConfigDict(validate_assignment=True, str_strip_whitespace=True,from_attributes=True)
 
     email: EmailStr
     role: UserRole
     id:int
+    profile_pic_url: str | None = None
     created_at:datetime
 
 class artist_profilesBase(BaseModel):
@@ -112,9 +108,6 @@ class eventsBase(BaseModel):
     budget:float|None=None
     event_date:datetime|None=None
 
-class eventsCreate(eventsBase):
-    pass
-
 class eventsUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1)
     description: str | None = Field(default=None, min_length=1)
@@ -129,6 +122,7 @@ class eventsResponse(eventsBase):
     organizer_id:int
     status:EventStatus
     created_at:datetime
+    event_poster_url:str
 
 class applicationsBase(BaseModel):
     pitch_note:str|None =None
