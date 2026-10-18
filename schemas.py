@@ -112,6 +112,7 @@ class portfolio_itemsResponse(portfolio_itemsBase):
 
     id:int
     artist_id:int
+    media_type: str | None = None
     created_at:datetime
 
 class eventsBase(BaseModel):

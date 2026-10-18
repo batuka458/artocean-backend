@@ -1,5 +1,13 @@
 from fastapi import Depends, FastAPI, HTTPException,status
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import UploadFile, File, Form
+from io import BytesIO
+from pathlib import Path
+import shutil
+from fastapi.staticfiles import StaticFiles
+import cloudinary
+import cloudinary.uploader
+import os
 from sqlalchemy.orm import Session
 from security import hash_password,create_token,get_current_artist
 from security import verify_password,get_current_user,get_current_organizer
@@ -37,6 +45,21 @@ from schemas import (
 app=FastAPI()
 
 Base.metadata.create_all(bind=engine)
+MEDIA_DIR = Path("uploads")
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+
+app.mount(
+    "/uploads",
+    StaticFiles(directory=MEDIA_DIR),
+    name="uploads"
+)
+
+cloudinary.config(
+    cloud_name=os.environ["CLOUDINARY_CLOUD_NAME"],
+    api_key=os.environ["CLOUDINARY_API_KEY"],
+    api_secret=os.environ["CLOUDINARY_API_SECRET"],
+    secure=True
+)
 
 @app.get("/")
 def home():
@@ -256,26 +279,74 @@ def del_organizer(current_organizer:OrganizerProfile=Depends(get_current_organiz
     db.delete(current_organizer)
     db.commit()
 
-@app.post("/artist/portfolio",response_model=portfolio_itemsResponse,status_code=status.HTTP_201_CREATED)
-def create_portfolio_item(data: portfolio_itemsCreate, current_artist: ArtistsProfile = Depends(get_current_artist), db: Session = Depends(get_db)):
-    artist = db.query(ArtistsProfile).filter(ArtistsProfile.id == current_artist.id).first()
+@app.post(
+    "/artist/portfolio",
+    response_model=portfolio_itemsResponse,
+    status_code=status.HTTP_201_CREATED
+)
+def create_portfolio_item(
+    title: str = Form(...),
+    description: str = Form(""),
+    media: UploadFile = File(...),
+    current_artist: ArtistsProfile = Depends(get_current_artist),
+    db: Session = Depends(get_db)
+):
+    allowed_types = {
+        "image/jpeg": "image",
+        "image/png": "image",
+        "image/webp": "image",
+        "video/mp4": "video",
+        "audio/mpeg": "audio",
+        "audio/wav": "audio",
+        "application/pdf": "document",
+    }
 
-    if not artist:
-        raise HTTPException(status_code=404,detail="Artist not found")
+    media_type = allowed_types.get(media.content_type)
 
-    portfolio_item = PortfolioItem(
-        artist_id=current_artist.id,
-        title=data.title,
-        description=data.description,
-        media_url=data.media_url,
-        ai_tags=data.ai_tags
-    )
+    if media_type is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported media type"
+        )
 
-    db.add(portfolio_item)
-    db.commit()
-    db.refresh(portfolio_item)
+    max_size = 10 * 1024 * 1024  # 10 MB
 
-    return portfolio_item
+    try:
+        content = media.file.read(max_size + 1)
+        if len(content) > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail="File exceeds the 10 MB limit"
+            )
+
+        upload_result = cloudinary.uploader.upload(
+            BytesIO(content),
+            resource_type="auto",
+            folder="portfolio"
+        )
+        media_url = upload_result.get("secure_url")
+        if not media_url:
+            raise HTTPException(
+                status_code=502,
+                detail="Media upload failed"
+            )
+
+        item = PortfolioItem(
+            artist_id=current_artist.id,
+            title=title,
+            description=description,
+            media_url=media_url,
+            media_type=media_type,
+            ai_tags=[]
+        )
+
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+
+        return item
+    finally:
+        media.file.close()
 
 @app.get("/artist/portfolio",response_model=list[portfolio_itemsResponse])
 def get_artist_portfolio(current_artist:ArtistsProfile=Depends(get_current_artist)):
@@ -558,4 +629,3 @@ def get_me(
     current_user:User=Depends(get_current_user)
 ):
     return current_user
-
