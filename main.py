@@ -527,7 +527,7 @@ def create_event(title:str=Form(...),
             detail="Unsupported media type"
         )
     max_size=10*1024*1024
-    stage = "reading file"
+
     try:
         content=event_poster.file.read(max_size + 1)
         if len(content)>max_size:
@@ -535,7 +535,7 @@ def create_event(title:str=Form(...),
                 status_code=413,
                 detail="File exceeds 10MB"
             )
-        stage = "uploading to Cloudinary"
+
         upload_result=cloudinary.uploader.upload(
             BytesIO(content),
             resource_type="image",
@@ -555,27 +555,17 @@ def create_event(title:str=Form(...),
             event_date=event_date,
             event_poster_url=event_poster_url
         )
-        stage = "saving to database"
         db.add(event)
         try:
             db.commit()
-        except SQLAlchemyError:
+        except SQLAlchemyError as exc:
             db.rollback()
-            raise
-        db.refresh(event)
+            print(f"Event database error: {type(exc).__name__}: {exc}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Database error while creating event: {type(exc).__name__}"
+            ) from exc
         return event
-    except HTTPException:
-        raise
-
-    except Exception as exc:
-        traceback.print_exc()
-        db.rollback()
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed while {stage}: {type(exc).__name__}: {str(exc)}"
-        ) from exc
-    
     finally:
         event_poster.file.close()
 

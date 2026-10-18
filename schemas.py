@@ -122,7 +122,7 @@ class eventsResponse(eventsBase):
     organizer_id:int
     status:EventStatus
     created_at:datetime
-    event_poster_url:str
+    event_poster_url: str | None = None
 
 class applicationsBase(BaseModel):
     pitch_note:str|None =None
