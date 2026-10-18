@@ -24,6 +24,7 @@ class User(Base):
     email = Column(String, nullable=False, unique=True, index=True)
     password=Column(String,nullable=False)
     role=Column(SQLEnum(UserRole), nullable=False)
+    profile_pic_url=Column(String,nullable=True)
     created_at=Column(DateTime, default=datetime.utcnow)
 
     artist_profile=relationship("ArtistsProfile",back_populates="user",uselist=False)

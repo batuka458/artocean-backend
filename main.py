@@ -30,8 +30,6 @@ from schemas import (
     
     LoginRequest,Token,
 
-    portfolio_itemsCreate,
-    portfolio_itemsUpdate,
     portfolio_itemsResponse,
 
     eventsCreate,
@@ -320,7 +318,6 @@ def create_portfolio_item(
                 detail="File exceeds the 10 MB limit"
             )
 
-        stage= "uploading to Cloudinary"
         upload_result = cloudinary.uploader.upload(
             BytesIO(content),
             resource_type="auto",
@@ -347,17 +344,6 @@ def create_portfolio_item(
         db.refresh(item)
 
         return item
-    except HTTPException:
-        raise
-
-    except Exception as exc:
-        traceback.print_exc()
-        db.rollback()
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed while {stage}: {type(exc).__name__}: {str(exc)}"
-        ) from exc
     
     finally:
         media.file.close()
@@ -393,17 +379,67 @@ def get_portfolio_item(portfolio_id: int,db: Session = Depends(get_db)):
     return item
 
 @app.patch("/portfolio/{portfolio_id}",response_model=portfolio_itemsResponse)
-def update_portfolio_item(portfolio_id: int,data: portfolio_itemsUpdate,current_artist:ArtistsProfile=Depends(get_current_artist),db: Session = Depends(get_db)):
+def update_portfolio_item(
+    portfolio_id: int,
+    title: str | None = Form(None),
+    description: str | None = Form(None),
+    ai_tags: list[str] | None = Form(None),
+    media: UploadFile | None = File(None),
+    current_artist: ArtistsProfile = Depends(get_current_artist),
+    db: Session = Depends(get_db)
+):
     item = db.query(PortfolioItem).filter(PortfolioItem.id == portfolio_id).first()
     if not item:
         raise HTTPException(status_code=404,detail="Portfolio item not found")
     if item.artist_id != current_artist.id:
         raise HTTPException(status_code=403, detail="Not authorized to update this portfolio item")
 
-    update_data = data.model_dump(exclude_unset=True)
+    if title is not None:
+        item.title = title
+    if description is not None:
+        item.description = description
+    if ai_tags is not None:
+        item.ai_tags = ai_tags
 
-    for key, value in update_data.items():
-        setattr(item, key, value)
+    if media is not None:
+        allowed_types = {
+            "image/jpeg": "image",
+            "image/png": "image",
+            "image/webp": "image",
+            "video/mp4": "video",
+            "audio/mpeg": "audio",
+            "audio/wav": "audio",
+            "application/pdf": "document",
+        }
+        media_type = allowed_types.get(media.content_type)
+        if media_type is None:
+            raise HTTPException(status_code=400, detail="Unsupported media type")
+
+        max_size = 10 * 1024 * 1024
+        try:
+            content = media.file.read(max_size + 1)
+            if len(content) > max_size:
+                raise HTTPException(
+                    status_code=413,
+                    detail="File exceeds the 10 MB limit"
+                )
+
+            upload_result = cloudinary.uploader.upload(
+                BytesIO(content),
+                resource_type="auto",
+                folder="portfolio"
+            )
+            media_url = upload_result.get("secure_url")
+            if not media_url:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Media upload failed"
+                )
+
+            item.media_url = media_url
+            item.media_type = media_type
+        finally:
+            media.file.close()
 
     db.commit()
     db.refresh(item)

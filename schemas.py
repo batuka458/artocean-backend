@@ -98,15 +98,6 @@ class portfolio_itemsBase(BaseModel):
     media_url:str = Field(min_length=1)
     ai_tags:list[str]|None = Field(default_factory=list)
 
-class portfolio_itemsCreate(portfolio_itemsBase):
-    pass
-
-class portfolio_itemsUpdate(BaseModel):
-    title:str|None = Field(default=None,min_length=1)
-    description:str|None
-    media_url:str|None = Field(default=None,min_length=1)
-    ai_tags:list[str]|None = None
-
 class portfolio_itemsResponse(portfolio_itemsBase):
     model_config = ConfigDict(validate_assignment=True, str_strip_whitespace=True,from_attributes=True)
 
