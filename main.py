@@ -527,26 +527,35 @@ def create_event(title:str=Form(...),
             detail="Unsupported media type"
         )
     max_size=10*1024*1024
+    stage = "reading poster"
 
     try:
-        content=event_poster.file.read(max_size + 1)
-        if len(content)>max_size:
+        content = event_poster.file.read(max_size + 1)
+
+        if len(content) > max_size:
             raise HTTPException(
                 status_code=413,
                 detail="File exceeds 10MB"
             )
 
-        upload_result=cloudinary.uploader.upload(
+        stage = "uploading poster to Cloudinary"
+
+        upload_result = cloudinary.uploader.upload(
             BytesIO(content),
             resource_type="image",
             folder="event_poster"
         )
-        event_poster_url=upload_result.get("secure_url")
+
+        event_poster_url = upload_result.get("secure_url")
+
         if not event_poster_url:
             raise HTTPException(
                 status_code=502,
-                detail="image upload failed"
+                detail="Image upload failed"
             )
+
+        stage = "creating event record"
+
         event = Event(
             organizer_id=current_organizer.id,
             title=title,
@@ -555,17 +564,27 @@ def create_event(title:str=Form(...),
             event_date=event_date,
             event_poster_url=event_poster_url
         )
+
         db.add(event)
-        try:
-            db.commit()
-        except SQLAlchemyError as exc:
-            db.rollback()
-            print(f"Event database error: {type(exc).__name__}: {exc}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Database error while creating event: {type(exc).__name__}"
-            ) from exc
+
+        stage = "saving event to database"
+        db.commit()
+        db.refresh(event)
+
+        stage = "building response"
         return event
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        db.rollback()
+        print(f"EVENT ERROR at {stage}: {type(exc).__name__}: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Event failed at {stage}: {type(exc).__name__}"
+        ) from exc
+
     finally:
         event_poster.file.close()
 
