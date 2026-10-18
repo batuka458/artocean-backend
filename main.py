@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 import cloudinary
 import cloudinary.uploader
 import os
+import traceback
 from sqlalchemy.orm import Session
 from security import hash_password,create_token,get_current_artist
 from security import verify_password,get_current_user,get_current_organizer
@@ -319,6 +320,7 @@ def create_portfolio_item(
                 detail="File exceeds the 10 MB limit"
             )
 
+        stage= "uploading to Cloudinary"
         upload_result = cloudinary.uploader.upload(
             BytesIO(content),
             resource_type="auto",
@@ -345,6 +347,18 @@ def create_portfolio_item(
         db.refresh(item)
 
         return item
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        traceback.print_exc()
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed while {stage}: {type(exc).__name__}: {str(exc)}"
+        ) from exc
+    
     finally:
         media.file.close()
 
